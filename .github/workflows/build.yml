@@ -208,9 +208,24 @@ jobs:
           grep -q "smoke" /tmp/status.txt
           echo "--- scrittura e rilettura di una risorsa attraverso il backend"
           sudo ./teleport/tctl -c /tmp/teleport.yaml users add prova-ha --roles=access --logins=nobody || { echo "ERRORE: users add (rc=$?)"; exit 1; }
-          sudo ./teleport/tctl -c /tmp/teleport.yaml users ls > /tmp/users.txt 2>&1 || { echo "ERRORE: users ls (rc=$?)"; cat /tmp/users.txt; exit 1; }
+          echo "--- la scrittura e' nel database?"
+          docker exec pg psql -U teleport -d teleport_backend -tAc "select count(*) from kv where convert_from(key,'UTF8') like '%prova-ha%'" | tee /tmp/user_db.txt
+          # La lettura passa dalla cache dell'auth, che si aggiorna dal change feed (wal2json):
+          # se la riga c'e' ma la rilettura non arriva mai, il feed non consegna.
+          echo "--- rilettura attraverso la cache (fino a 30 s)"
+          found=0
+          for i in $(seq 1 30); do
+            sudo ./teleport/tctl -c /tmp/teleport.yaml users ls > /tmp/users.txt 2>&1 || true
+            if grep -q "prova-ha" /tmp/users.txt; then found=$i; break; fi
+            sleep 1
+          done
           cat /tmp/users.txt
-          grep -q "prova-ha" /tmp/users.txt || { echo "ERRORE: prova-ha non riletto"; exit 1; }
+          if [ "$found" = 0 ]; then
+            echo "ERRORE: riga nel DB = $(cat /tmp/user_db.txt), ma prova-ha non riletto in 30 s: il change feed non consegna"
+            sudo grep -E "PGBK|change feed|Change feed" /tmp/teleport.log | tail -20
+            exit 1
+          fi
+          echo "prova-ha riletto dopo ~${found} s (riga nel DB: $(cat /tmp/user_db.txt))"
           echo "--- tabelle e righe nel backend Postgres"
           docker exec pg psql -U teleport -d teleport_backend -c '\dt'
           docker exec pg psql -U teleport -d teleport_backend -tAc 'select count(*) from kv' | tee /tmp/kv.txt
