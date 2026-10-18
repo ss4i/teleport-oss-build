@@ -4,6 +4,9 @@ name: build-teleport-oss
 # senza il sottomodulo Enterprise (e/). Il binario risultante e' AGPL-3.0:
 # la licenza "Community Edition" copre solo i binari pubblicati da Gravitational.
 # Poi prova che il backend Postgres (quello che serve all'HA) funzioni nella build.
+#
+# Tre job: build (lento, ~40 min) -> prova-ha (riusa l'artefatto) -> release.
+# Per ripetere solo la prova su una build gia' fatta: input build_run_id.
 
 on:
   workflow_dispatch:
@@ -16,30 +19,26 @@ on:
         description: "Pubblica una GitHub Release firmata"
         type: boolean
         default: true
+      build_run_id:
+        description: "Facoltativo: id di un run precedente da cui prendere l'artefatto (salta la build)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
   id-token: write
+  actions: read
+
+env:
+  TAG: ${{ inputs.tag }}
+  OS: linux
+  ARCH: amd64
 
 jobs:
   build:
+    if: ${{ inputs.build_run_id == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
-    env:
-      TAG: ${{ inputs.tag }}
-      OS: linux
-      ARCH: amd64
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: teleport
-          POSTGRES_PASSWORD: teleport
-          POSTGRES_DB: postgres
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U teleport"
-          --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - name: Libera spazio sul runner
         run: |
@@ -108,15 +107,66 @@ jobs:
           OUT="teleport-${TAG}-ss4i-${OS}-${ARCH}-bin.tar.gz"
           tar -czf "../$OUT" -C pkg teleport
           cd .. && sha256sum "$OUT" | tee "$OUT.sha256"
-          echo "OUT=$OUT" >> "$GITHUB_ENV"
 
       - name: Il binario si presenta
         run: |
           ./teleport/build/teleport version
           ./teleport/build/tctl version
-          ./teleport/build/teleport version | grep -q "Enterprise" && { echo "ERRORE: build Enterprise"; exit 1; } || echo "Build OSS."
+          if ./teleport/build/teleport version | grep -q "Enterprise"; then echo "ERRORE: build Enterprise"; exit 1; fi
+          echo "Build OSS."
 
-      - name: Prova HA — auth con backend Postgres (stato e audit)
+      - name: Artefatto (subito, prima di qualunque prova)
+        uses: actions/upload-artifact@v4
+        with:
+          name: teleport-bin
+          path: |
+            teleport-${{ inputs.tag }}-ss4i-linux-amd64-bin.tar.gz
+            teleport-${{ inputs.tag }}-ss4i-linux-amd64-bin.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  prova-ha:
+    needs: build
+    if: ${{ always() && (needs.build.result == 'success' || inputs.build_run_id != '') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Scarica l'artefatto (da questo run)
+        if: ${{ inputs.build_run_id == '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: teleport-bin
+      - name: Scarica l'artefatto (da un run precedente)
+        if: ${{ inputs.build_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: teleport-bin
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verifica sha256 ed estrai
+        run: |
+          set -e
+          sha256sum -c teleport-${TAG}-ss4i-${OS}-${ARCH}-bin.tar.gz.sha256
+          tar -xzf teleport-${TAG}-ss4i-${OS}-${ARCH}-bin.tar.gz
+          ./teleport/teleport version
+          head -2 teleport/LICENSE
+          test ! -f teleport/LICENSE-community
+
+      - name: Postgres 16 con wal2json e wal_level=logical
+        run: |
+          set -e
+          docker run -d --name pg -p 5432:5432 \
+            -e POSTGRES_USER=teleport -e POSTGRES_PASSWORD=teleport -e POSTGRES_DB=postgres \
+            postgres:16-bookworm -c wal_level=logical -c max_replication_slots=10 -c max_wal_senders=10
+          for i in $(seq 1 30); do docker exec pg pg_isready -U teleport && break; sleep 2; done
+          docker exec pg bash -c 'apt-get update -qq && apt-get install -y -qq postgresql-16-wal2json >/dev/null'
+          docker exec pg psql -U teleport -d postgres -tAc "show wal_level"
+          docker exec pg ls /usr/lib/postgresql/16/lib/wal2json.so
+          # Teleport crea da solo i database se l'utente ha CREATEDB; li creiamo noi per chiarezza
+          docker exec pg psql -U teleport -d postgres -c "create database teleport_backend" -c "create database teleport_audit"
+
+      - name: Auth con backend Postgres (stato e audit)
         run: |
           set -e
           mkdir -p /tmp/td/sessions
@@ -142,54 +192,70 @@ jobs:
           ssh_service:
             enabled: no
           YAML
-          ./teleport/build/teleport start -c /tmp/teleport.yaml > /tmp/teleport.log 2>&1 &
+          sudo ./teleport/teleport start -c /tmp/teleport.yaml > /tmp/teleport.log 2>&1 &
+          ok=0
           for i in $(seq 1 60); do
-            if ./teleport/build/tctl -c /tmp/teleport.yaml status >/tmp/status.txt 2>&1; then break; fi
+            if sudo ./teleport/tctl -c /tmp/teleport.yaml status >/tmp/status.txt 2>&1; then ok=1; break; fi
             sleep 3
           done
           cat /tmp/status.txt
-          grep -q "Cluster.*smoke" /tmp/status.txt
-          ./teleport/build/tctl -c /tmp/teleport.yaml get cluster_auth_preference | head -20
-          sudo apt-get install -y -qq postgresql-client >/dev/null
-          echo "--- tabelle nel backend Postgres"
-          PGPASSWORD=teleport psql -h localhost -U teleport -d teleport_backend -c '\dt'
-          PGPASSWORD=teleport psql -h localhost -U teleport -d teleport_backend -c 'select count(*) as chiavi from kv'
-          echo "--- tabelle audit"
-          PGPASSWORD=teleport psql -h localhost -U teleport -d teleport_audit -c '\dt'
-          pkill -f "teleport start" || true
-          echo "Backend Postgres e audit Postgres funzionano nella build OSS."
+          test $ok = 1
+          grep -q "smoke" /tmp/status.txt
+          echo "--- scrittura e rilettura di una risorsa attraverso il backend"
+          sudo ./teleport/tctl -c /tmp/teleport.yaml users add prova-ha --roles=access --logins=nobody >/dev/null
+          sudo ./teleport/tctl -c /tmp/teleport.yaml users ls | grep -q prova-ha
+          echo "--- tabelle e righe nel backend Postgres"
+          docker exec pg psql -U teleport -d teleport_backend -c '\dt'
+          docker exec pg psql -U teleport -d teleport_backend -tAc 'select count(*) from kv' | tee /tmp/kv.txt
+          test "$(cat /tmp/kv.txt)" -gt 0
+          docker exec pg psql -U teleport -d teleport_backend -tAc "select count(*) from kv where convert_from(key,'UTF8') like '%prova-ha%'" | tee /tmp/user.txt
+          test "$(cat /tmp/user.txt)" -gt 0
+          echo "--- audit su Postgres"
+          docker exec pg psql -U teleport -d teleport_audit -c '\dt'
+          docker exec pg psql -U teleport -d teleport_audit -tAc "select count(*) from events" | tee /tmp/ev.txt
+          test "$(cat /tmp/ev.txt)" -gt 0
+          echo "--- change feed (logical decoding) attivo, senza errori"
+          docker exec pg psql -U teleport -d teleport_backend -tAc "select slot_name, plugin, active from pg_replication_slots"
+          if grep -q "Change feed stream lost" /tmp/teleport.log; then echo "ERRORE: change feed perso"; exit 1; fi
+          echo "Backend Postgres (stato + change feed) e audit Postgres funzionano nella build OSS."
 
       - name: Log di teleport (sempre)
         if: always()
-        run: tail -n 80 /tmp/teleport.log || true
+        run: sudo tail -n 80 /tmp/teleport.log || true
 
-      - name: Artefatti
-        uses: actions/upload-artifact@v4
+  release:
+    needs: [build, prova-ha]
+    if: ${{ always() && inputs.release && needs.prova-ha.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Scarica l'artefatto (da questo run)
+        if: ${{ inputs.build_run_id == '' }}
+        uses: actions/download-artifact@v4
         with:
-          name: teleport-${{ inputs.tag }}-ss4i-linux-amd64
-          path: |
-            ${{ env.OUT }}
-            ${{ env.OUT }}.sha256
-          if-no-files-found: error
-
-      - name: cosign
-        if: ${{ inputs.release }}
-        uses: sigstore/cosign-installer@v3
+          name: teleport-bin
+      - name: Scarica l'artefatto (da un run precedente)
+        if: ${{ inputs.build_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: teleport-bin
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: sigstore/cosign-installer@v3
       - name: Firma (keyless, OIDC di GitHub)
-        if: ${{ inputs.release }}
-        run: cosign sign-blob --yes --bundle "${OUT}.sigstore.json" "${OUT}"
-
+        run: |
+          OUT="teleport-${TAG}-ss4i-${OS}-${ARCH}-bin.tar.gz"
+          sha256sum -c "$OUT.sha256"
+          cosign sign-blob --yes --bundle "${OUT}.sigstore.json" "${OUT}"
       - name: Release
-        if: ${{ inputs.release }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}-ss4i.${{ github.run_number }}
           name: Teleport ${{ inputs.tag }} (build AGPL SS4I, run ${{ github.run_number }})
           body: |
             Build dal sorgente AGPL-3.0 di `gravitational/teleport` al tag `${{ inputs.tag }}`, senza sottomodulo Enterprise, con `FIDO2=no PIV=no`.
-            Verificato nello stesso run: `teleport version` non Enterprise; auth avviato con backend Postgres (stato) e audit su Postgres.
+            Provato nello stesso run: `teleport version` non Enterprise; auth avviato con backend Postgres (stato e change feed via wal2json) e audit su Postgres; un utente scritto e riletto attraverso il backend.
             Firma: `cosign verify-blob --bundle <file>.sigstore.json --certificate-identity-regexp 'github.com/ss4i/teleport-oss-build' --certificate-oidc-issuer https://token.actions.githubusercontent.com <file>`
           files: |
-            ${{ env.OUT }}
-            ${{ env.OUT }}.sha256
-            ${{ env.OUT }}.sigstore.json
+            teleport-${{ inputs.tag }}-ss4i-linux-amd64-bin.tar.gz
+            teleport-${{ inputs.tag }}-ss4i-linux-amd64-bin.tar.gz.sha256
+            teleport-${{ inputs.tag }}-ss4i-linux-amd64-bin.tar.gz.sigstore.json
