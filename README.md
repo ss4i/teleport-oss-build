@@ -18,7 +18,14 @@ Il Makefile upstream distingue da solo le build di terzi (`GITHUB_REPOSITORY_OWN
 4. ricostruzione dell'archivio con la `LICENSE` AGPL al posto di `LICENSE-community`;
 5. `teleport version` (deve non essere Enterprise);
 6. **prova HA**: auth avviato con `storage.type: postgresql` e audit su Postgres, `tctl status`, tabelle nel DB;
-7. release `vX.Y.Z-ss4i.N` con archivio, sha256 e firma cosign keyless.
+7. release `vX.Y.Z-ss4i.N` con archivio, sha256 e firma cosign keyless;
+8. **immagine** `ghcr.io/ss4i/teleport-oss:vX.Y.Z` (e `:vX.Y.Z-ss4i.N`): gli stessi binari su `distroless/cc-debian12`, con base, librerie ed `ENTRYPOINT` del Dockerfile distroless di upstream, quindi sostituisce `teleport-distroless` senza toccare il compose. Firmata con cosign per digest.
+
+Verifica dell'immagine (nel compose conviene fissarla per digest):
+
+```sh
+cosign verify ghcr.io/ss4i/teleport-oss@sha256:<digest>   --certificate-identity-regexp 'github.com/ss4i/teleport-oss-build'   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
 
 Verifica di una release:
 

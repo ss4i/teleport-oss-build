@@ -1,0 +1,12 @@
+#!/bin/bash
+# Come build.assets/charts/fetch-debs di upstream: scarica i .deb e li
+# estrae in /opt/staging, tenendo i file control per gli scanner.
+set -euo pipefail
+mkdir -p /opt/staging/root /opt/staging/status
+for pkg in "$@"; do
+    apt-get download "$pkg" && dpkg-deb -R "$pkg"*.deb "/tmp/$pkg"
+    cp "/tmp/$pkg/DEBIAN/control" "/opt/staging/status/$pkg"
+    rm -r "/tmp/$pkg/DEBIAN"
+    cp -r "/tmp/$pkg/"* /opt/staging/root
+    rm -rf "/tmp/$pkg"
+done

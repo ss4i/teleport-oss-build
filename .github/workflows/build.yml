@@ -5,7 +5,7 @@ name: build-teleport-oss
 # la licenza "Community Edition" copre solo i binari pubblicati da Gravitational.
 # Poi prova che il backend Postgres (quello che serve all'HA) funzioni nella build.
 #
-# Tre job: build (lento, ~40 min) -> prova-ha (riusa l'artefatto) -> release.
+# Job: build (lento, ~40 min) -> prova-ha (riusa l'artefatto) -> release e immagine.
 # Per ripetere solo la prova su una build gia' fatta: input build_run_id.
 
 on:
@@ -19,6 +19,10 @@ on:
         description: "Pubblica una GitHub Release firmata"
         type: boolean
         default: true
+      immagine:
+        description: "Pubblica l'immagine ghcr.io/ss4i/teleport-oss firmata"
+        type: boolean
+        default: true
       build_run_id:
         description: "Facoltativo: id di un run precedente da cui prendere l'artefatto (salta la build)"
         required: false
@@ -28,6 +32,7 @@ permissions:
   contents: write
   id-token: write
   actions: read
+  packages: write
 
 env:
   TAG: ${{ inputs.tag }}
@@ -285,3 +290,66 @@ jobs:
             teleport-${{ inputs.tag }}-ss4i-linux-amd64-bin.tar.gz
             teleport-${{ inputs.tag }}-ss4i-linux-amd64-bin.tar.gz.sha256
             teleport-${{ inputs.tag }}-ss4i-linux-amd64-bin.tar.gz.sigstore.json
+
+  immagine:
+    needs: [build, prova-ha]
+    if: ${{ always() && inputs.immagine && needs.prova-ha.result == 'success' }}
+    runs-on: ubuntu-24.04
+    env:
+      IMG: ghcr.io/ss4i/teleport-oss
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scarica l'artefatto (da questo run)
+        if: ${{ inputs.build_run_id == '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: teleport-bin
+      - name: Scarica l'artefatto (da un run precedente)
+        if: ${{ inputs.build_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: teleport-bin
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Estrai nel contesto
+        run: |
+          OUT="teleport-${TAG}-ss4i-${OS}-${ARCH}-bin.tar.gz"
+          sha256sum -c "$OUT.sha256"
+          tar -xzf "$OUT" -C immagine
+          test ! -e immagine/teleport/teleport-update
+          grep -q "GNU AFFERO GENERAL PUBLIC LICENSE" immagine/teleport/LICENSE
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build e push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: immagine
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.IMG }}:${{ inputs.tag }}
+            ${{ env.IMG }}:${{ inputs.tag }}-ss4i.${{ github.run_number }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.version=${{ inputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Teleport ${{ inputs.tag }} dal sorgente AGPL, build SS4I (senza Enterprise, senza teleport-update)
+      - name: L'immagine si presenta
+        run: |
+          REF="${IMG}@${{ steps.push.outputs.digest }}"
+          docker run --rm --entrypoint /usr/local/bin/teleport "$REF" version | tee v.txt
+          grep -q "${TAG}" v.txt
+          if grep -q Enterprise v.txt; then echo "ERRORE: Enterprise"; exit 1; fi
+          docker run --rm --entrypoint /usr/local/bin/tbot "$REF" version
+          if docker run --rm --entrypoint /usr/local/bin/teleport-update "$REF" version 2>/dev/null; then
+            echo "ERRORE: teleport-update presente"; exit 1
+          fi
+          echo "Immagine: $REF"
+      - uses: sigstore/cosign-installer@v3
+      - name: Firma (keyless, per digest)
+        run: cosign sign --yes "${IMG}@${{ steps.push.outputs.digest }}"
