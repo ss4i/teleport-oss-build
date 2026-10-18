@@ -114,14 +114,17 @@ jobs:
           echo "buildbox=$BOX devtoolset=$DEVTOOLSET go=$GOV"
           docker pull -q "$BOX"
           SRCDIR=/go/src/github.com/gravitational/teleport
-          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":$SRCDIR -v /tmp:/tmp -w $SRCDIR -h buildbox             -e HOME=/tmp/home -e GOMODCACHE=/tmp/gomodcache -e GITHUB_REPOSITORY_OWNER -e CI=true             -e TELEPORT_UPDATE_DEV_BUILD=1             "$BOX" /usr/bin/scl enable "$DEVTOOLSET"             "make release-unix-preserving-webassets OS=$OS ARCH=$ARCH RUNTIME=$GOV FIDO2=no PIV=no REPRODUCIBLE=no TELEPORT_UPDATE_DEV_BUILD=1" 2>&1 | tail -n 200
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":$SRCDIR -v /tmp:/tmp -w $SRCDIR -h buildbox             -e HOME=/tmp/home -e GOMODCACHE=/tmp/gomodcache -e GITHUB_REPOSITORY_OWNER -e CI=true             -e TELEPORT_UPDATE_DEV_BUILD=1 -e GOTOOLCHAIN="$GOV"             "$BOX" /usr/bin/scl enable "$DEVTOOLSET"             "make release-unix-preserving-webassets OS=$OS ARCH=$ARCH RUNTIME=$GOV FIDO2=no PIV=no REPRODUCIBLE=no TELEPORT_UPDATE_DEV_BUILD=1" 2>&1 | tail -n 200
           ls -la *.tar.gz
 
       - name: I binari partono su Debian 12 (glibc 2.36)
         working-directory: teleport
         run: |
+          GOV="$(make -s --no-print-directory -C build.assets --eval='pv-%: ; @echo $($*)' pv-GOLANG_VERSION)"
           for b in teleport tctl tsh tbot; do
-            docker run --rm -v "$PWD/build":/b:ro debian:12-slim /b/$b version || { echo "ERRORE: $b non parte su Debian 12"; exit 1; }
+            docker run --rm -v "$PWD/build":/b:ro debian:12-slim /b/$b version | tee v.txt || { echo "ERRORE: $b non parte su Debian 12"; exit 1; }
+            # il buildbox ha un tag mobile: il Go deve essere quello del tag, non il suo
+            grep -q " $GOV\$" v.txt || { echo "ERRORE: $b compilato con Go diverso da $GOV"; exit 1; }
           done
 
       - name: Ricostruisci l'archivio con la LICENSE AGPL

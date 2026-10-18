@@ -14,7 +14,7 @@ Il Makefile upstream distingue da solo le build di terzi (`GITHUB_REPOSITORY_OWN
 
 1. checkout di `gravitational/teleport` al tag, senza sottomoduli; controllo che `LICENSE` sia AGPL e che `e/` non esista;
 2. Go (da `go.mod`), Node 24 + pnpm (da `packageManager`), Rust (da `rust-toolchain.toml`) con target wasm32;
-3. `make release OS=linux ARCH=amd64 FIDO2=no PIV=no`;
+3. `make release-unix-preserving-webassets` dentro il buildbox CentOS 7 di upstream (come le loro release amd64: glibc vecchie, quindi i binari partono anche su Debian 12 / PVE 8), con il Go dichiarato dal tag; prova che `teleport`, `tctl`, `tsh`, `tbot` partano su Debian 12;
 4. ricostruzione dell'archivio con la `LICENSE` AGPL al posto di `LICENSE-community`;
 5. `teleport version` (deve non essere Enterprise);
 6. **prova HA**: auth avviato con `storage.type: postgresql` e audit su Postgres, `tctl status`, tabelle nel DB;
