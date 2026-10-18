@@ -31,4 +31,6 @@ cosign verify-blob --bundle teleport-vX.Y.Z-ss4i-linux-amd64-bin.tar.gz.sigstore
 
 ## Non incluso
 
-FIDO2 e PIV (chiavi hardware lato client): all'appliance servono il nodo e il servizio app, non i client. I `tsh` per gli operatori SS4I restano quelli ufficiali, ad uso interno sotto le soglie della licenza Community.
+FIDO2 e PIV (chiavi hardware lato client): all'appliance servono il nodo e il servizio app, non i client.
+
+Anche il rendezvous centrale e i `tsh` degli operatori SS4I usano binari compilati da qui, non quelli ufficiali: servono a erogare un servizio, uso che la licenza Community non consente.
