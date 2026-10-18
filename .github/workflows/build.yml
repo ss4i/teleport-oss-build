@@ -93,7 +93,10 @@ jobs:
       - name: make release (OSS, senza FIDO2/PIV)
         working-directory: teleport
         run: |
-          make release OS=$OS ARCH=$ARCH FIDO2=no PIV=no 2>&1 | tail -n 200
+          # teleport-update scarica e verifica i binari ufficiali dal CDN Gravitational
+          # (licenza Community): non lo distribuiamo. DEV_BUILD serve solo a superare
+          # il controllo delle chiavi di firma; il binario viene tolto dall'archivio.
+          make release OS=$OS ARCH=$ARCH FIDO2=no PIV=no TELEPORT_UPDATE_DEV_BUILD=1 2>&1 | tail -n 200
           ls -la *.tar.gz
 
       - name: Ricostruisci l'archivio con la LICENSE AGPL
@@ -102,7 +105,8 @@ jobs:
           set -e
           SRC="teleport-${TAG}-${OS}-${ARCH}-bin.tar.gz"
           rm -rf pkg && mkdir pkg && tar -xzf "$SRC" -C pkg
-          rm -f pkg/teleport/LICENSE-community
+          rm -f pkg/teleport/LICENSE-community pkg/teleport/teleport-update
+          test ! -e pkg/teleport/teleport-update
           cp LICENSE pkg/teleport/LICENSE
           OUT="teleport-${TAG}-ss4i-${OS}-${ARCH}-bin.tar.gz"
           tar -czf "../$OUT" -C pkg teleport

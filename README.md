@@ -33,4 +33,6 @@ cosign verify-blob --bundle teleport-vX.Y.Z-ss4i-linux-amd64-bin.tar.gz.sigstore
 
 FIDO2 e PIV (chiavi hardware lato client): all'appliance servono il nodo e il servizio app, non i client.
 
+`teleport-update` (aggiornamento automatico degli agenti): scarica i binari ufficiali dal CDN Gravitational, che hanno la licenza Community. Viene tolto dall'archivio; gli aggiornamenti passano dalle release di questo repo.
+
 Anche il rendezvous centrale e i `tsh` degli operatori SS4I usano binari compilati da qui, non quelli ufficiali: servono a erogare un servizio, uso che la licenza Community non consente.
