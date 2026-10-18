@@ -95,14 +95,34 @@ jobs:
       - name: Pacchetti di sistema
         run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential pkg-config
 
-      - name: make release (OSS, senza FIDO2/PIV)
+      - name: Web assets (sul runner, logo agpl)
+        working-directory: teleport
+        run: make ensure-webassets 2>&1 | tail -n 40
+
+      - name: make release (OSS, senza FIDO2/PIV) nel buildbox CentOS 7
         working-directory: teleport
         run: |
+          set -o pipefail
+          # Come release-centos7 di upstream: compilando sul runner (glibc 2.39) i
+          # binari non partono su Debian 12 / PVE 8 (glibc 2.36). Il buildbox
+          # pubblico di Gravitational e' solo l'ambiente di compilazione.
           # teleport-update scarica e verifica i binari ufficiali dal CDN Gravitational
           # (licenza Community): non lo distribuiamo. DEV_BUILD serve solo a superare
           # il controllo delle chiavi di firma; il binario viene tolto dall'archivio.
-          make release OS=$OS ARCH=$ARCH FIDO2=no PIV=no TELEPORT_UPDATE_DEV_BUILD=1 2>&1 | tail -n 200
+          pv() { make -s --no-print-directory -C build.assets --eval='pv-%: ; @echo $($*)' "pv-$1"; }
+          BOX="$(pv BUILDBOX_CENTOS7)"; DEVTOOLSET="$(pv DEVTOOLSET)"; GOV="$(pv GOLANG_VERSION)"
+          echo "buildbox=$BOX devtoolset=$DEVTOOLSET go=$GOV"
+          docker pull -q "$BOX"
+          SRCDIR=/go/src/github.com/gravitational/teleport
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":$SRCDIR -v /tmp:/tmp -w $SRCDIR -h buildbox             -e HOME=/tmp/home -e GOMODCACHE=/tmp/gomodcache -e GITHUB_REPOSITORY_OWNER -e CI=true             -e TELEPORT_UPDATE_DEV_BUILD=1             "$BOX" /usr/bin/scl enable "$DEVTOOLSET"             "make release-unix-preserving-webassets OS=$OS ARCH=$ARCH RUNTIME=$GOV FIDO2=no PIV=no REPRODUCIBLE=no TELEPORT_UPDATE_DEV_BUILD=1" 2>&1 | tail -n 200
           ls -la *.tar.gz
+
+      - name: I binari partono su Debian 12 (glibc 2.36)
+        working-directory: teleport
+        run: |
+          for b in teleport tctl tsh tbot; do
+            docker run --rm -v "$PWD/build":/b:ro debian:12-slim /b/$b version || { echo "ERRORE: $b non parte su Debian 12"; exit 1; }
+          done
 
       - name: Ricostruisci l'archivio con la LICENSE AGPL
         working-directory: teleport
