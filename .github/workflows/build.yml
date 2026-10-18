@@ -120,6 +120,7 @@ jobs:
       - name: I binari partono su Debian 12 (glibc 2.36)
         working-directory: teleport
         run: |
+          set -o pipefail
           GOV="$(make -s --no-print-directory -C build.assets --eval='pv-%: ; @echo $($*)' pv-GOLANG_VERSION)"
           for b in teleport tctl tsh tbot; do
             docker run --rm -v "$PWD/build":/b:ro debian:12-slim /b/$b version | tee v.txt || { echo "ERRORE: $b non parte su Debian 12"; exit 1; }
