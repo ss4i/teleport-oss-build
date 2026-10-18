@@ -207,8 +207,10 @@ jobs:
           test $ok = 1
           grep -q "smoke" /tmp/status.txt
           echo "--- scrittura e rilettura di una risorsa attraverso il backend"
-          sudo ./teleport/tctl -c /tmp/teleport.yaml users add prova-ha --roles=access --logins=nobody >/dev/null
-          sudo ./teleport/tctl -c /tmp/teleport.yaml users ls | grep -q prova-ha
+          sudo ./teleport/tctl -c /tmp/teleport.yaml users add prova-ha --roles=access --logins=nobody || { echo "ERRORE: users add (rc=$?)"; exit 1; }
+          sudo ./teleport/tctl -c /tmp/teleport.yaml users ls > /tmp/users.txt 2>&1 || { echo "ERRORE: users ls (rc=$?)"; cat /tmp/users.txt; exit 1; }
+          cat /tmp/users.txt
+          grep -q "prova-ha" /tmp/users.txt || { echo "ERRORE: prova-ha non riletto"; exit 1; }
           echo "--- tabelle e righe nel backend Postgres"
           docker exec pg psql -U teleport -d teleport_backend -c '\dt'
           docker exec pg psql -U teleport -d teleport_backend -tAc 'select count(*) from kv' | tee /tmp/kv.txt
