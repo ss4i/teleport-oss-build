@@ -158,10 +158,15 @@ jobs:
           set -e
           docker run -d --name pg -p 5432:5432 \
             -e POSTGRES_USER=teleport -e POSTGRES_PASSWORD=teleport -e POSTGRES_DB=postgres \
-            postgres:16-bookworm -c wal_level=logical -c max_replication_slots=10 -c max_wal_senders=10
+            postgres:16-bookworm -c wal_level=logical -c max_replication_slots=10 -c max_wal_senders=10 \
+            -c output_plugin_libraries=pgoutput,test_decoding,wal2json
+          # Dalle minori recenti Postgres ammette come plugin di uscita solo quelli in
+          # output_plugin_libraries (default: pgoutput, test_decoding). Teleport usa wal2json.
           for i in $(seq 1 30); do docker exec pg pg_isready -U teleport && break; sleep 2; done
           docker exec pg bash -c 'apt-get update -qq && apt-get install -y -qq postgresql-16-wal2json >/dev/null'
+          docker exec pg psql -U teleport -d postgres -tAc "select version()"
           docker exec pg psql -U teleport -d postgres -tAc "show wal_level"
+          docker exec pg psql -U teleport -d postgres -tAc "show output_plugin_libraries"
           docker exec pg ls /usr/lib/postgresql/16/lib/wal2json.so
           # Teleport crea da solo i database se l'utente ha CREATEDB; li creiamo noi per chiarezza
           docker exec pg psql -U teleport -d postgres -c "create database teleport_backend" -c "create database teleport_audit"
